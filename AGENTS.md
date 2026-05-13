@@ -25,7 +25,256 @@
 
 ---
 
-## 2. 技术栈 & 环境
+## 2. 行为原则
+
+> 源自 Andrej Karpathy 对 LLM 编码陷阱的观察，适配本项目语境。这四条原则与后文的技术规范同样重要——违反原则的代码，即使类型正确、lint 通过，也是不合格的。
+
+**权衡说明：** 这些原则偏向谨慎而非速度。对于琐碎任务（修一个拼写错误、一行明显改动），自行判断即可——不是每个改动都需要完整严谨流程。目标是减少非琐碎工作中的代价高昂错误，而非拖慢简单任务。
+
+### 2.1 编码前思考
+
+**不要假设。不要隐藏困惑。呈现权衡。**
+
+LLM 经常默默选择一种解释然后执行。本原则强制明确推理：
+
+- **明确说明假设** — 如果不确定，询问而不是猜测
+- **呈现多种解释** — 当存在歧义时，不要默默选择
+- **适时提出异议** — 如果存在更简单的方法，说出来
+- **困惑时停下来** — 指出不清楚的地方并要求澄清
+
+#### 本项目示例
+
+**用户请求：** "给掌心雷加一个穿透效果"
+
+❌ **默默假设，直接执行：**
+```
+// 假设穿透 = 子弹穿过敌人不消失
+// 假设穿透数量 = 1
+// 假设穿透只影响掌心雷
+// 直接改 ThunderPalms.ts，加了穿透计数器
+```
+
+✅ **呈现权衡：**
+```
+"穿透效果"有两种理解：
+
+1. **弹幕穿透**：雷光穿过敌人不消失，可连续命中
+   - 影响：所有弹幕类功法可能都需要，建议做成通用修饰符(穿透符)
+   - 与现有设计一致：GDD 中「穿透符」就是独立功法
+
+2. **穿透伤害**：雷光命中后伤害穿透到后方敌人（AOE 效果）
+   - 影响：更像 AOE 而非穿透，和火球术爆炸重叠
+
+建议走方案 1，作为独立功法「穿透符」实现，而非硬编码进掌心雷。
+这样御剑术、雷链等弹幕也能受益。
+```
+
+---
+
+### 2.2 简洁优先
+
+**用最少的代码解决问题。不要过度推测。**
+
+对抗过度工程的倾向：
+
+- 不要添加要求之外的功能
+- 不要为一次性代码创建抽象
+- 不要添加未要求的「灵活性」或「可配置性」
+- 不要为不可能发生的场景做错误处理
+- 如果 200 行代码可以写成 50 行，重写它
+
+**检验标准：** 资深工程师会觉得这过于复杂吗？如果是，简化。
+
+#### 本项目示例
+
+**用户请求：** "实现御剑术，飞剑环绕玩家旋转"
+
+❌ **过度工程：**
+```typescript
+// 为一种功法创建了完整的弹幕策略模式
+interface OrbitalPattern {
+  calculatePosition(angle: number, radius: number): Vec2;
+  updateRadius(currentRadius: number, dt: number): number;
+}
+
+class CircularOrbit implements OrbitalPattern { /* ... */ }
+class EllipticalOrbit implements OrbitalPattern { /* ... */ }
+class SpiralOrbit implements OrbitalPattern { /* ... */ }
+
+class OrbitalSkillSystem {
+  constructor(
+    private patternFactory: PatternFactory,
+    private radiusAnimator: RadiusAnimator,
+    private collisionResolver: CollisionResolver
+  ) {}
+  // ... 200 行，为 "4 把剑转圈" 写了一个框架
+}
+```
+
+✅ **简洁实现：**
+```typescript
+// SwordOrbit.ts — 4 把剑转圈，就这么简单
+class SwordOrbit implements Skill {
+  private angle = 0;
+  private swordCount = 2;  // Lv1: 2把, Lv2: 4把, Lv3: 6把
+  private radius = 60;
+
+  update(dt: number, ctx: CombatContext): void {
+    this.angle += this.rotSpeed * dt;
+    for (let i = 0; i < this.swordCount; i++) {
+      const a = this.angle + (Math.PI * 2 / this.swordCount) * i;
+      const sx = ctx.player.x + Math.cos(a) * this.radius;
+      const sy = ctx.player.y + Math.sin(a) * this.radius;
+      // 检测 sx,sy 处碰撞，造成伤害
+    }
+  }
+}
+```
+
+**何时加复杂度：** 只有当真正需要椭圆轨道、螺旋轨道时再重构。需求来之前，YAGNI。
+
+---
+
+### 2.3 精准修改
+
+**只碰必须碰的。只清理自己造成的混乱。**
+
+编辑现有代码时：
+
+- 不要「改进」相邻的代码、注释或格式
+- 不要重构没坏的东西
+- 匹配现有风格，即使你更倾向于不同的写法
+- 如果注意到无关的死代码，提一下——不要删除它
+
+当你的改动产生孤儿代码时：
+
+- 删除因你的改动而变得无用的 import/变量/函数
+- 不要删除预先存在的死代码，除非被要求
+
+**检验标准：** 每一行修改都应该能直接追溯到用户的请求。
+
+#### 本项目示例
+
+**用户请求：** "修一下飞妖偶尔从屏幕中间闪现的 bug"
+
+❌ **顺手重构：**
+```diff
+  class FlyingEnemy extends Enemy {
+-   update(dt: number) {
+-     this.x += this.vx * dt;
+-     this.y += this.vy * dt;
++   update(dt: number): void {
++     // 边界检查：飞妖应在屏幕外生成
++     if (!this.hasEnteredScreen && this.isOffscreen()) {
++       this.alive = false;
++       return;
++     }
++     this.x += this.vx * dt;
++     this.y += this.vy * dt;
+-     if (this.x < -100 || this.x > canvasWidth + 100) {
+-       this.alive = false;
+-     }
++     this.checkBounds();
+    }
++
++   private checkBounds(): void {
++     const margin = 100;
++     if (this.x < -margin || this.x > canvasWidth + margin ||
++         this.y < -margin || this.y > canvasHeight + margin) {
++       this.alive = false;
++     }
++   }
+  }
+```
+问题：加了返回类型注解、重构了边界检查、改了注释风格——都不是用户要求的。
+
+✅ **精准修复：**
+```diff
+  class FlyingEnemy extends Enemy {
+    update(dt: number) {
++     // 修复：飞妖未进入屏幕前不应被判定为出界
++     if (!this.hasEnteredScreen) {
++       if (this.isInsideViewport()) this.hasEnteredScreen = true;
++       return;  // 还没进屏幕，跳过出界检查
++     }
+      this.x += this.vx * dt;
+      this.y += this.vy * dt;
+      if (this.x < -100 || this.x > canvasWidth + 100) {
+        this.alive = false;
+      }
+    }
+```
+只加了修复闪现 bug 所需的最小改动。
+
+---
+
+### 2.4 目标驱动执行
+
+**定义成功标准。循环验证直到达成。**
+
+将指令式任务转化为可验证的目标：
+
+| 不要这样做 | 转化为 |
+|---|---|
+| "添加暴击" | "写暴击测试：20%概率→跑 1000 次验证分布，然后让测试通过" |
+| "修碰撞穿模 bug" | "写测试重现穿模场景，修到测试通过" |
+| "重构弹幕系统" | "确保重构前后所有弹幕测试都通过" |
+
+多步骤任务，写简短计划：
+
+```
+1. [步骤] → 验证: [检查]
+2. [步骤] → 验证: [检查]
+3. [步骤] → 验证: [检查]
+```
+
+**强有力的成功标准**让 Agent 能够独立循环执行。**弱标准**（"让它工作"）需要不断澄清。
+
+#### 本项目示例
+
+**用户请求：** "加一个新的 Boss 蛇妖"
+
+❌ **模糊执行：**
+```
+我来实现蛇妖 Boss：
+1. 创建 Boss 代码
+2. 添加到关卡
+3. 测试一下
+```
+
+✅ **目标驱动：**
+```
+蛇妖 Boss 实现计划：
+
+1. 在 data/enemies.ts 添加蛇妖配置
+   → 验证: 配置类型正确，数值在 Boss 合理区间
+
+2. 在 game/Boss.ts 创建 SnakeBoss 类（两阶段）
+   → 验证: 单元测试通过（阶段切换逻辑 + 攻击模式）
+
+3. 在 Spawner.ts 注册蛇妖在 60s 生成
+   → 验证: 测试关卡到 60s 触发 Boss 生成
+
+4. 微信开发者工具实机验证
+   → 验证: Boss 出现 + 两阶段切换 + 击杀后关卡继续
+
+每步完成后验证，不通过不进入下一步。
+```
+
+---
+
+### 行为原则生效的标志
+
+以下情况说明原则在起作用：
+
+- **diff 中不必要的改动更少** — 只有请求的改动出现
+- **因过度复杂而导致的重写更少** — 代码第一次就写得简洁
+- **澄清问题在实现之前提出** — 而不是在犯错之后
+- **干净、精简的 PR** — 没有顺手重构或「改进」
+
+---
+
+## 3. 技术栈 & 环境
 
 ### 运行时
 
@@ -72,7 +321,7 @@ npm run test
 
 ---
 
-## 3. 项目结构
+## 4. 项目结构
 
 ```
 fingertip-cultivation/
@@ -141,7 +390,7 @@ fingertip-cultivation/
 
 ---
 
-## 4. 编码规范
+## 5. 编码规范
 
 ### TypeScript 规则
 
@@ -193,7 +442,7 @@ main.ts
 
 ---
 
-## 5. 核心设计模式
+## 6. 核心设计模式
 
 ### 5.1 游戏主循环 (Game Loop)
 
@@ -317,7 +566,7 @@ export const SKILL_CONFIG = {
 
 ---
 
-## 6. 关键约束（不可违反）
+## 7. 关键约束（不可违反）
 
 ### 性能约束
 
@@ -355,7 +604,7 @@ export const SKILL_CONFIG = {
 
 ---
 
-## 7. 微信小游戏 API 速查
+## 8. 微信小游戏 API 速查
 
 Agent 需要用到的微信 API（不要用 Web API 替代）：
 
@@ -375,7 +624,7 @@ Agent 需要用到的微信 API（不要用 Web API 替代）：
 
 ---
 
-## 8. 测试规范
+## 9. 测试规范
 
 ### 单元测试
 
@@ -413,7 +662,7 @@ global.wx = {
 
 ---
 
-## 9. Git 规范
+## 10. Git 规范
 
 ### Commit 格式
 
@@ -444,7 +693,7 @@ refactor(core): extract entity update logic from Game.ts
 
 ---
 
-## 10. Agent 操作指南
+## 11. Agent 操作指南
 
 ### 开始工作前
 
@@ -488,7 +737,7 @@ refactor(core): extract entity update logic from Game.ts
 
 ---
 
-## 11. 常见陷阱
+## 12. 常见陷阱
 
 | 陷阱 | 症状 | 正确做法 |
 |---|---|---|
@@ -503,7 +752,7 @@ refactor(core): extract entity update logic from Game.ts
 
 ---
 
-## 12. 性能调优 Checklist
+## 13. 性能调优 Checklist
 
 当帧率低于 55fps 时，按以下顺序排查：
 
@@ -517,4 +766,4 @@ refactor(core): extract entity update logic from Game.ts
 
 ---
 
-*文档版本: v1.0 | 日期: 2026-05-13*
+*文档版本: v2.0 | 日期: 2026-05-13*
