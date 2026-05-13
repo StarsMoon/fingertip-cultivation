@@ -66,6 +66,13 @@
 
 单指操作 / 自动攻击 / 一局 60~120s / 静音可玩 / 无惩罚退出
 
+### 暂停 & 生命周期
+
+- 暂停触发：双击屏幕 或 抬手 1.5s
+- 暂停时 update 停止，render 继续（显示暂停 UI 遮罩）
+- `wx.onHide()` 触发自动存档，`wx.onShow()` 恢复
+- 退出时自动存档：当前等级/属性/灵石/永久升级进度
+
 ---
 
 ## 4. 编码规范
@@ -81,14 +88,17 @@
 
 类 PascalCase · 函数 camelCase · 常量 UPPER_SNAKE · 文件 PascalCase · 目录 kebab-case
 
-### 依赖方向（单向，禁止反向）
+### 依赖方向（import 方向，禁止反向）
 
 ```
-main → game/ → combat/ → data/ (纯数据)
-              → render/          utils/ (纯工具)
-              → audio/
-              → ui/ (依赖 game/ + combat/)
-              → progression/ (依赖 game/ + data/)
+main ──imports──→ game/ (base layer)
+combat/ ──imports──→ game/, data/
+render/ ──imports──→ game/
+audio/ ──imports──→ game/
+ui/ ──imports──→ game/, combat/
+progression/ ──imports──→ game/, data/
+data/ (纯数据，零依赖)
+utils/ (纯工具，零依赖)
 ```
 
 `game/` 不 import `combat/`，`combat/` 不 import `ui/`。
@@ -112,11 +122,18 @@ acquire/release，禁止直接 new+GC。Entity 死亡必须 `pool.release()`。
 ### 功法接口
 
 ```typescript
+interface CombatContext {
+  player: Player;
+  enemies: Enemy[];
+  projectiles: Projectile[];
+  spawner: Spawner;
+}
+
 interface Skill {
   readonly id: string;
   readonly name: string;
   readonly category: 'projectile' | 'enhance' | 'utility';
-  level: number;       // 1~4
+  level: number;       // 1~4 (v1.0 只实现 1~3)
   maxLevel: number;
   activate(player: Player): void;
   update(dt: number, ctx: CombatContext): void;
@@ -131,6 +148,22 @@ interface Skill {
 ### 配置驱动
 
 数值只在 `data/*.ts`，逻辑代码不写具体数字。改数值只改 data，不改逻辑。
+
+```typescript
+// data/skills.ts — 每个功法的配置结构
+interface SkillConfig {
+  id: string;
+  name: string;
+  category: 'projectile' | 'enhance' | 'utility';
+  levels: SkillLevelConfig[];
+}
+interface SkillLevelConfig {
+  damage: number;
+  cooldown: number;    // 秒
+  range: number;       // 像素
+  [key: string]: number | string;  // 功法特有字段
+}
+```
 
 ---
 
